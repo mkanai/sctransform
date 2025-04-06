@@ -877,36 +877,58 @@ reg_model_pars <- function(model_pars, genes_log_gmean_step1, genes_log_gmean, c
   } else {
     # fit / regularize per batch
     batches <- unique(cell_attr[, batch_var])
-    for (b in batches) {
-      sel <- cell_attr[, batch_var] == b & rownames(cell_attr) %in% cells_step1
-      #batch_genes_log_gmean_step1 <- log10(rowMeans(umi[genes_step1, sel]))
-      if (use_geometric_mean){
-        batch_genes_log_gmean_step1 <- log10(row_gmean(umi[genes_step1, sel], eps = gmean_eps))
-      } else {
-        batch_genes_log_gmean_step1 <- log10(rowMeans(umi[genes_step1, sel]))
-      }
 
-      if (any(is.infinite(batch_genes_log_gmean_step1))) {
-        if (verbosity > 0) {
-          message('Some genes not detected in batch ', b, ' -- assuming a low mean.')
+    # Process each batch in parallel
+    batch_results <- future_lapply(
+      X = batches,
+      FUN = function(b) {
+        # Create a result matrix for this batch
+        batch_result <- matrix(NA_real_, length(genes), ncol(model_pars),
+                              dimnames = list(genes, colnames(model_pars)))
+
+        # Calculate batch_genes_log_gmean_step1
+        sel <- cell_attr[, batch_var] == b & rownames(cell_attr) %in% cells_step1
+        if (use_geometric_mean){
+          batch_genes_log_gmean_step1 <- log10(row_gmean(umi[genes_step1, sel], eps = gmean_eps))
+        } else {
+          batch_genes_log_gmean_step1 <- log10(rowMeans(umi[genes_step1, sel]))
         }
-        batch_genes_log_gmean_step1[is.infinite(batch_genes_log_gmean_step1) & batch_genes_log_gmean_step1 < 0] <- min(batch_genes_log_gmean_step1[!is.infinite(batch_genes_log_gmean_step1)])
-      }
-      sel <- cell_attr[, batch_var] == b
-      #batch_genes_log_gmean <- log10(rowMeans(umi[, sel]))
-      if (use_geometric_mean){
-        batch_genes_log_gmean <- log10(row_gmean(umi[, sel], eps = gmean_eps))
-      } else {
-        batch_genes_log_gmean <- log10(rowMeans(umi[, sel]))
-      }
 
-      # in case some genes have not been observed in this batch
-      batch_genes_log_gmean <- pmax(batch_genes_log_gmean, min(batch_genes_log_gmean_step1))
-      batch_o <- order(batch_genes_log_gmean)
-      for (i in which(grepl(paste0(batch_var, b), colnames(model_pars)))) {
-        model_pars_fit[batch_o, i] <- ksmooth(x = batch_genes_log_gmean_step1, y = model_pars[, i],
-                                              x.points = batch_genes_log_gmean, bandwidth = bw, kernel='normal')$y
-      }
+        if (any(is.infinite(batch_genes_log_gmean_step1))) {
+          if (verbosity > 0) {
+            message('Some genes not detected in batch ', b, ' -- assuming a low mean.')
+          }
+          batch_genes_log_gmean_step1[is.infinite(batch_genes_log_gmean_step1) & batch_genes_log_gmean_step1 < 0] <- min(batch_genes_log_gmean_step1[!is.infinite(batch_genes_log_gmean_step1)])
+        }
+
+        # Calculate batch_genes_log_gmean
+        sel <- cell_attr[, batch_var] == b
+        if (use_geometric_mean){
+          batch_genes_log_gmean <- log10(row_gmean(umi[, sel], eps = gmean_eps))
+        } else {
+          batch_genes_log_gmean <- log10(rowMeans(umi[, sel]))
+        }
+
+        # In case some genes have not been observed in this batch
+        batch_genes_log_gmean <- pmax(batch_genes_log_gmean, min(batch_genes_log_gmean_step1))
+        batch_o <- order(batch_genes_log_gmean)
+
+        # Process each relevant column
+        for (i in which(grepl(paste0(batch_var, b), colnames(model_pars)))) {
+          batch_result[batch_o, i] <- ksmooth(x = batch_genes_log_gmean_step1, y = model_pars[, i],
+                                            x.points = batch_genes_log_gmean, bandwidth = bw, kernel='normal')$y
+        }
+
+        return(batch_result)
+      },
+      future.seed = TRUE
+    )
+
+    # Combine results from all batches
+    for (batch_result in batch_results) {
+      # Only update non-NA values from each batch result
+      non_na_indices <- which(!is.na(batch_result))
+      model_pars_fit[non_na_indices] <- batch_result[non_na_indices]
     }
   }
 
