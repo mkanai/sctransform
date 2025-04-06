@@ -968,7 +968,7 @@ reg_model_pars <- function(model_pars, genes_log_gmean_step1, genes_log_gmean, c
   return(model_pars_fit)
 }
 
-sample_cells_by_batch <- function(umi, n_cells, cell_attr, batch_var = NULL, batch_levels = NULL) {
+sample_cells_by_batch <- function(umi, n_cells, cell_attr, batch_var = NULL, batch_levels = NULL, min_cells_per_batch = 10) {
   # If no batch variable is specified, perform simple random sampling
   if (is.null(batch_var)) {
     return(sample(x = colnames(umi), size = n_cells))
@@ -983,52 +983,48 @@ sample_cells_by_batch <- function(umi, n_cells, cell_attr, batch_var = NULL, bat
   all_cells <- colnames(umi)
 
   # Create a list to store cells by batch
-  cells_by_batch <- list()
-  for (level in batch_levels) {
-    cells_by_batch[[level]] <- all_cells[cell_attr[all_cells, batch_var] == level]
+  cells_by_batch <- split(all_cells, cell_attr[all_cells, batch_var])
 
-    # Check if any batch has no cells
-    if (length(cells_by_batch[[level]]) == 0) {
-      stop("Batch level '", level, "' has no cells")
-    }
+  # Check if any batch has no cells
+  batch_sizes <- lengths(cells_by_batch)
+  empty_batches <- batch_levels[batch_sizes == 0]
+  if (length(empty_batches) > 0) {
+    stop("Batch level(s) '", paste(empty_batches, collapse = "', '"), "' have no cells")
   }
 
+  # Ensure the list only contains the specified batch levels and in the right order
+  cells_by_batch <- cells_by_batch[batch_levels]
+
   # Calculate how many cells to sample from each batch
-  # First ensure at least 1 cell from each batch
-  min_cells_per_batch <- 1
   remaining_cells <- n_cells - (length(batch_levels) * min_cells_per_batch)
 
   if (remaining_cells < 0) {
-    stop("n_cells (", n_cells, ") is too small to sample at least one cell from each of the ",
-         length(batch_levels), " batch levels")
+    stop("n_cells (", n_cells, ") is too small to sample at least ", min_cells_per_batch,
+         " cells from each of the ", length(batch_levels), " batch levels")
   }
 
   # Distribute remaining cells proportionally to batch sizes
-  batch_sizes <- sapply(cells_by_batch, length)
   batch_props <- batch_sizes / sum(batch_sizes)
   cells_per_batch <- floor(remaining_cells * batch_props) + min_cells_per_batch
 
   # Adjust if rounding causes us to sample fewer than n_cells
   cells_deficit <- n_cells - sum(cells_per_batch)
   if (cells_deficit > 0) {
-    # Add the deficit to the largest batches
-    batch_order <- order(batch_sizes, decreasing = TRUE)
-    for (i in 1:cells_deficit) {
-      batch_idx <- batch_order[(i-1) %% length(batch_order) + 1]
-      cells_per_batch[batch_idx] <- cells_per_batch[batch_idx] + 1
-    }
+    # Add the deficit to the smallest batches
+    batch_order <- order(batch_sizes)
+    cells_per_batch[batch_order[1:cells_deficit]] <- cells_per_batch[batch_order[1:cells_deficit]] + 1
   }
 
   # Sample cells from each batch
   sampled_cells <- c()
   for (i in seq_along(batch_levels)) {
     level <- batch_levels[i]
-    n_to_sample <- min(cells_per_batch[i], length(cells_by_batch[[level]]))
+    n_to_sample <- min(cells_per_batch[i], batch_sizes[i])
 
     # Check if we're trying to sample more cells than available in this batch
-    if (n_to_sample < cells_per_batch[i]) {
+    if (batch_sizes[i] < cells_per_batch[i]) {
       warning("Requested ", cells_per_batch[i], " cells from batch '", level,
-              "', but only ", n_to_sample, " are available")
+              "', but only ", batch_sizes[i], " are available")
     }
 
     batch_sample <- sample(cells_by_batch[[level]], size = n_to_sample)
@@ -1036,11 +1032,11 @@ sample_cells_by_batch <- function(umi, n_cells, cell_attr, batch_var = NULL, bat
   }
 
   # Verify that no batch levels were dropped
-  sampled_batches <- levels(droplevels(cell_attr[sampled_cells, batch_var]))
-  dropped_batch_levels <- setdiff(batch_levels, sampled_batches)
+  sampled_batch_counts <- table(cell_attr[sampled_cells, batch_var])
+  dropped_batch_levels <- batch_levels[!batch_levels %in% names(sampled_batch_counts)]
 
   if (length(dropped_batch_levels) > 0) {
-    stop('Dropped batch levels ', dropped_batch_levels, ', implementation error')
+    stop('Dropped batch levels ', paste(dropped_batch_levels, collapse=", "), ', implementation error')
   }
 
   # Return the sampled cells
