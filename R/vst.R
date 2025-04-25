@@ -23,6 +23,7 @@ NULL
 #' @param res_clip_range Numeric of length two specifying the min and max values the results will be clipped to; default is c(-sqrt(ncol(umi)), sqrt(ncol(umi)))
 #' @param bin_size Number of genes to process simultaneously; this will determine how often the progress bars are updated and how much memory is being used; default is 500
 #' @param min_cells Only use genes that have been detected in at least this many cells; default is 5
+#' @param min_cells_step1 Only use genes that have been detected in at least this many cells during the first step of parameter estimation; default is 5
 #' @param residual_type What type of residuals to return; can be 'pearson', 'deviance', or 'none'; default is 'pearson'
 #' @param return_cell_attr Make cell attributes part of the output; default is FALSE
 #' @param return_gene_attr Calculate gene attributes and make part of output; default is TRUE
@@ -120,6 +121,7 @@ vst <- function(umi,
                 res_clip_range = c(-sqrt(ncol(umi)), sqrt(ncol(umi))),
                 bin_size = 500,
                 min_cells = 5,
+                min_cells_step1 = 5,
                 residual_type = 'pearson',
                 return_cell_attr = FALSE,
                 return_gene_attr = TRUE,
@@ -240,7 +242,16 @@ vst <- function(umi,
       }
     }
     genes_cell_count_step1 <- rowSums(umi[, cells_step1] > 0)
-    genes_step1 <- rownames(umi)[genes_cell_count_step1 >= min_cells]
+    genes_step1 <- rownames(umi)[genes_cell_count_step1 >= min_cells_step1]
+    if (use_geometric_mean){
+      genes_log_gmean_step1 <- log10(row_gmean(umi[genes_step1, ], eps = gmean_eps))
+    } else {
+      genes_log_gmean_step1 <- log10(rowMeans(umi[genes_step1, ]))
+    }
+  } else if (min_cells < min_cells_step1) {
+    cells_step1 <- colnames(umi)
+    genes_cell_count_step1 <- rowSums(umi > 0)
+    genes_step1 <- rownames(umi)[genes_cell_count_step1 >= min_cells_step1]
     if (use_geometric_mean){
       genes_log_gmean_step1 <- log10(row_gmean(umi[genes_step1, ], eps = gmean_eps))
     } else {
